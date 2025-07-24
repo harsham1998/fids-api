@@ -1,0 +1,9 @@
+{
+  "name": "FIDS ADB API",
+  "build": {
+    "builder": "DOCKERFILE"
+  },
+  "env": {
+    "PORT": "8000"
+  }
+}

@@ -80,16 +80,36 @@ python main.py
 
 Server runs on `http://localhost:8000`
 
-## Vercel Deployment
+## Deployment Options
 
-1. Install Vercel CLI:
+### ⚠️ **Important Note**
+Vercel doesn't support system binaries like ADB. Use one of these alternatives:
+
+### Option 1: Railway (Recommended)
+1. Push to GitHub
+2. Connect to [Railway](https://railway.app)
+3. Railway will auto-detect Dockerfile and deploy
+
+### Option 2: Render
+1. Push to GitHub  
+2. Create new Web Service on [Render](https://render.com)
+3. Select "Docker" as environment
+
+### Option 3: Local Docker
 ```bash
-npm i -g vercel
+docker-compose up --build
 ```
 
-2. Deploy:
+### Option 4: VPS/Cloud Server
 ```bash
-vercel --prod
+# Install ADB
+sudo apt install android-tools-adb
+
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Run server
+python main.py
 ```
 
 ## Prerequisites

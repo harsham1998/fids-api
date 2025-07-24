@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  fids-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - FLASK_ENV=production
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb  # For USB ADB connections
+    privileged: true  # Required for ADB USB access
+    restart: unless-stopped
