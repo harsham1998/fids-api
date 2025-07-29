@@ -8,11 +8,25 @@
   ],
   "routes": [
     {
+      "src": "/socket.io/(.*)",
+      "dest": "main.py"
+    },
+    {
       "src": "/api/(.*)",
+      "dest": "main.py"
+    },
+    {
+      "src": "/(.*)",
       "dest": "main.py"
     }
   ],
   "env": {
-    "PYTHONPATH": "."
+    "PYTHONPATH": ".",
+    "VERCEL_ENV": "production"
+  },
+  "functions": {
+    "main.py": {
+      "maxDuration": 30
+    }
   }
 }

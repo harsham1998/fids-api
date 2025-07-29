@@ -1,473 +1,169 @@
 import subprocess
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, disconnect
 import logging
 import math
+import os
+import pyodbc
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from datetime import datetime, timedelta
+import json
+import threading
+import time
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'ef6c5b4b31266d534b7069822ec1b4eee82d014cab206dbd1cc5e73693db7604')
+
+# Configure CORS based on environment
+if os.getenv('VERCEL_ENV'):
+    # Production environment - allow your deployed frontend
+    CORS(app, origins=[
+        "https://fids-two.vercel.app",  # Replace with your actual frontend URL
+        "https://*.vercel.app"  # Allow all Vercel preview deployments
+    ])
+else:
+    # Development environment
+    CORS(app, origins="*")
+
+# Initialize SocketIO with appropriate settings for Vercel
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*" if not os.getenv('VERCEL_ENV') else [
+        "https://fids-two.vercel.app",
+        "https://*.vercel.app"
+    ],
+    logger=False,  # Disable verbose logging in production
+    engineio_logger=False,
+    transports=['websocket', 'polling']  # Enable both transports for better compatibility
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flight data - moved from frontend
-FLIGHT_DATA = [
-    # Dataset 1 - Mix of Indian and International
-    { 
-        "id": 1, 
-        "airline": "Air India", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Air-India-Logo.png",
-        "time": "12:00", 
-        "destination": "MUMBAI", 
-        "destinationCode": "BOM",
-        "flight": "AI 131", 
-        "std": "12:00",
-        "etd": "12:05",
-        "gate": "A12", 
-        "status": "Delayed",
-        "statusClass": "status-delayed"
-    },
-    { 
-        "id": 2, 
-        "airline": "Emirates", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d0/Emirates_logo.svg/200px-Emirates_logo.svg.png",
-        "time": "12:05", 
-        "destination": "DUBAI", 
-        "destinationCode": "DXB",
-        "flight": "EK 512", 
-        "std": "12:05",
-        "etd": "12:05",
-        "gate": "B15", 
-        "status": "Boarding",
-        "statusClass": "status-boarding"
-    },
-    { 
-        "id": 3, 
-        "airline": "IndiGo", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/67/IndiGo_logo.svg/200px-IndiGo_logo.svg.png",
-        "time": "12:10", 
-        "destination": "DELHI", 
-        "destinationCode": "DEL",
-        "flight": "6E 2142", 
-        "std": "12:10",
-        "etd": "12:10",
-        "gate": "C08", 
-        "status": "On Time",
-        "statusClass": "status-on-time"
-    },
-    { 
-        "id": 4, 
-        "airline": "Singapore Airlines", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Singapore-Airlines-Logo.png",
-        "time": "12:15", 
-        "destination": "SINGAPORE", 
-        "destinationCode": "SIN",
-        "flight": "SQ 518", 
-        "std": "12:15",
-        "etd": "12:15",
-        "gate": "D22", 
-        "status": "Gate Open",
-        "statusClass": "status-gate-open"
-    },
-    { 
-        "id": 5, 
-        "airline": "SpiceJet", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/SpiceJet_Logo.svg/200px-SpiceJet_Logo.svg.png",
-        "time": "12:20", 
-        "destination": "BANGALORE", 
-        "destinationCode": "BLR",
-        "flight": "SG 8194", 
-        "std": "12:20",
-        "etd": "12:20",
-        "gate": "A05", 
-        "status": "Check-In",
-        "statusClass": "status-check-in"
-    },
-    { 
-        "id": 6, 
-        "airline": "Lufthansa", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b8/Lufthansa_Logo_2018.svg/200px-Lufthansa_Logo_2018.svg.png",
-        "time": "12:25", 
-        "destination": "FRANKFURT", 
-        "destinationCode": "FRA",
-        "flight": "LH 761", 
-        "std": "12:25",
-        "etd": "12:25",
-        "gate": "E11", 
-        "status": "Scheduled",
-        "statusClass": "status-scheduled"
-    },
-    { 
-        "id": 7, 
-        "airline": "Vistara", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Vistara_Logo.svg/200px-Vistara_Logo.svg.png",
-        "time": "12:30", 
-        "destination": "CHENNAI", 
-        "destinationCode": "MAA",
-        "flight": "UK 889", 
-        "std": "12:30",
-        "etd": "12:35",
-        "gate": "B07", 
-        "status": "Final Call",
-        "statusClass": "status-final-call"
-    },
-    { 
-        "id": 8, 
-        "airline": "Qatar Airways", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/Qatar_Airways_Logo.svg/200px-Qatar_Airways_Logo.svg.png",
-        "time": "12:35", 
-        "destination": "DOHA", 
-        "destinationCode": "DOH",
-        "flight": "QR 614", 
-        "std": "12:35",
-        "etd": "12:35",
-        "gate": "C19", 
-        "status": "Now Boarding",
-        "statusClass": "status-now-boarding"
-    },
-    { 
-        "id": 9, 
-        "airline": "GoAir", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Go_First_logo.svg/200px-Go_First_logo.svg.png",
-        "time": "12:40", 
-        "destination": "KOLKATA", 
-        "destinationCode": "CCU",
-        "flight": "G8 152", 
-        "std": "12:40",
-        "etd": "12:40",
-        "gate": "A18", 
-        "status": "Go to Gate",
-        "statusClass": "status-go-to-gate"
-    },
-    { 
-        "id": 10, 
-        "airline": "British Airways", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/42/British_Airways_Logo.svg/200px-British_Airways_Logo.svg.png",
-        "time": "12:45", 
-        "destination": "LONDON", 
-        "destinationCode": "LHR",
-        "flight": "BA 142", 
-        "std": "12:45",
-        "etd": "13:15",
-        "gate": "D14", 
-        "status": "Delayed",
-        "statusClass": "status-delayed"
-    },
-    # Dataset 2 - More flights
-    { 
-        "id": 11, 
-        "airline": "IndiGo", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/67/IndiGo_logo.svg/200px-IndiGo_logo.svg.png",
-        "time": "12:50", 
-        "destination": "PUNE", 
-        "destinationCode": "PNQ",
-        "flight": "6E 6114", 
-        "std": "12:50",
-        "etd": "12:50",
-        "gate": "B03", 
-        "status": "Boarding",
-        "statusClass": "status-boarding"
-    },
-    { 
-        "id": 12, 
-        "airline": "Thai Airways", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0c/Thai_Airways_logo.svg/200px-Thai_Airways_logo.svg.png",
-        "time": "12:55", 
-        "destination": "BANGKOK", 
-        "destinationCode": "BKK",
-        "flight": "TG 315", 
-        "std": "12:55",
-        "etd": "12:55",
-        "gate": "E09", 
-        "status": "Last Call",
-        "statusClass": "status-last-call"
-    },
-    { 
-        "id": 13, 
-        "airline": "Air India Express", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Air_India_Logo.svg/200px-Air_India_Logo.svg.png",
-        "time": "13:00", 
-        "destination": "KOCHI", 
-        "destinationCode": "COK",
-        "flight": "IX 384", 
-        "std": "13:00",
-        "etd": "13:00",
-        "gate": "A09", 
-        "status": "Gate Closed",
-        "statusClass": "status-gate-closed"
-    },
-    { 
-        "id": 14, 
-        "airline": "American Airlines", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/American_Airlines_logo_2013.svg/200px-American_Airlines_logo_2013.svg.png",
-        "time": "13:05", 
-        "destination": "NEW YORK", 
-        "destinationCode": "JFK",
-        "flight": "AA 127", 
-        "std": "13:05",
-        "etd": "13:05",
-        "gate": "D25", 
-        "status": "Departed",
-        "statusClass": "status-departed"
-    },
-    { 
-        "id": 15, 
-        "airline": "AirAsia India", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f5/AirAsia_New_Logo.svg/200px-AirAsia_New_Logo.svg.png",
-        "time": "13:10", 
-        "destination": "GOA", 
-        "destinationCode": "GOI",
-        "flight": "I5 719", 
-        "std": "13:10",
-        "etd": "13:10",
-        "gate": "C06", 
-        "status": "On Time",
-        "statusClass": "status-on-time"
-    },
-    { 
-        "id": 16, 
-        "airline": "Air France", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/44/Air_France_Logo.svg/200px-Air_France_Logo.svg.png",
-        "time": "13:15", 
-        "destination": "PARIS", 
-        "destinationCode": "CDG",
-        "flight": "AF 225", 
-        "std": "13:15",
-        "etd": "13:45",
-        "gate": "E16", 
-        "status": "New Time",
-        "statusClass": "status-new-time"
-    },
-    { 
-        "id": 17, 
-        "airline": "Jet Airways", 
-        "logo": "https://logos-world.net/wp-content/uploads/2021/02/Jet-Airways-Logo.png",
-        "time": "13:20", 
-        "destination": "AHMEDABAD", 
-        "destinationCode": "AMD",
-        "flight": "9W 469", 
-        "std": "13:20",
-        "etd": "13:20",
-        "gate": "B12", 
-        "status": "Cancelled",
-        "statusClass": "status-cancelled"
-    },
-    { 
-        "id": 18, 
-        "airline": "KLM", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/KLM-Logo.png",
-        "time": "13:25", 
-        "destination": "AMSTERDAM", 
-        "destinationCode": "AMS",
-        "flight": "KL 872", 
-        "std": "13:25",
-        "etd": "13:25",
-        "gate": "D18", 
-        "status": "Check-In",
-        "statusClass": "status-check-in"
-    },
-    { 
-        "id": 19, 
-        "airline": "Alliance Air", 
-        "logo": "https://logos-world.net/wp-content/uploads/2023/01/Alliance-Air-Logo.png",
-        "time": "13:30", 
-        "destination": "JAIPUR", 
-        "destinationCode": "JAI",
-        "flight": "9I 624", 
-        "std": "13:30",
-        "etd": "13:30",
-        "gate": "A15", 
-        "status": "Diverted",
-        "statusClass": "status-diverted"
-    },
-    { 
-        "id": 20, 
-        "airline": "Turkish Airlines", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Turkish-Airlines-Logo.png",
-        "time": "13:35", 
-        "destination": "ISTANBUL", 
-        "destinationCode": "IST",
-        "flight": "TK 714", 
-        "std": "13:35",
-        "etd": "13:35",
-        "gate": "E21", 
-        "status": "Gate Open",
-        "statusClass": "status-gate-open"
-    },
-    # Dataset 3 - Additional flights
-    { 
-        "id": 21, 
-        "airline": "IndiGo", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/67/IndiGo_logo.svg/200px-IndiGo_logo.svg.png",
-        "time": "13:40", 
-        "destination": "HYDERABAD", 
-        "destinationCode": "HYD",
-        "flight": "6E 7019", 
-        "std": "13:40",
-        "etd": "13:40",
-        "gate": "C12", 
-        "status": "Final Call",
-        "statusClass": "status-final-call"
-    },
-    { 
-        "id": 22, 
-        "airline": "Japan Airlines", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Japan-Airlines-Logo.png",
-        "time": "13:45", 
-        "destination": "TOKYO", 
-        "destinationCode": "NRT",
-        "flight": "JL 748", 
-        "std": "13:45",
-        "etd": "13:45",
-        "gate": "E08", 
-        "status": "Boarding",
-        "statusClass": "status-boarding"
-    },
-    { 
-        "id": 23, 
-        "airline": "SpiceJet", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/SpiceJet_Logo.svg/200px-SpiceJet_Logo.svg.png",
-        "time": "13:50", 
-        "destination": "SRINAGAR", 
-        "destinationCode": "SXR",
-        "flight": "SG 991", 
-        "std": "13:50",
-        "etd": "14:20",
-        "gate": "A21", 
-        "status": "Delayed",
-        "statusClass": "status-delayed"
-    },
-    { 
-        "id": 24, 
-        "airline": "Cathay Pacific", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Cathay-Pacific-Logo.png",
-        "time": "13:55", 
-        "destination": "HONG KONG", 
-        "destinationCode": "HKG",
-        "flight": "CX 695", 
-        "std": "13:55",
-        "etd": "13:55",
-        "gate": "D09", 
-        "status": "Now Boarding",
-        "statusClass": "status-now-boarding"
-    },
-    { 
-        "id": 25, 
-        "airline": "Air India", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Air_India_Logo.svg/200px-Air_India_Logo.svg.png",
-        "time": "14:00", 
-        "destination": "BHUBANESWAR", 
-        "destinationCode": "BBI",
-        "flight": "AI 406", 
-        "std": "14:00",
-        "etd": "14:00",
-        "gate": "B09", 
-        "status": "Gate Closed",
-        "statusClass": "status-gate-closed"
-    },
-    { 
-        "id": 26, 
-        "airline": "Ethiopian Airlines", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Ethiopian-Airlines-Logo.png",
-        "time": "14:05", 
-        "destination": "ADDIS ABABA", 
-        "destinationCode": "ADD",
-        "flight": "ET 684", 
-        "std": "14:05",
-        "etd": "14:05",
-        "gate": "E19", 
-        "status": "Scheduled",
-        "statusClass": "status-scheduled"
-    },
-    { 
-        "id": 27, 
-        "airline": "Vistara", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cb/Vistara_Logo.svg/200px-Vistara_Logo.svg.png",
-        "time": "14:10", 
-        "destination": "LUCKNOW", 
-        "destinationCode": "LKO",
-        "flight": "UK 971", 
-        "std": "14:10",
-        "etd": "14:10",
-        "gate": "C15", 
-        "status": "On Time",
-        "statusClass": "status-on-time"
-    },
-    { 
-        "id": 28, 
-        "airline": "Korean Air", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Korean-Air-Logo.png",
-        "time": "14:15", 
-        "destination": "SEOUL", 
-        "destinationCode": "ICN",
-        "flight": "KE 672", 
-        "std": "14:15",
-        "etd": "14:15",
-        "gate": "D17", 
-        "status": "Go to Gate",
-        "statusClass": "status-go-to-gate"
-    },
-    { 
-        "id": 29, 
-        "airline": "GoAir", 
-        "logo": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/Go_First_logo.svg/200px-Go_First_logo.svg.png",
-        "time": "14:20", 
-        "destination": "INDORE", 
-        "destinationCode": "IDR",
-        "flight": "G8 394", 
-        "std": "14:20",
-        "etd": "14:20",
-        "gate": "A07", 
-        "status": "Check-In",
-        "statusClass": "status-check-in"
-    },
-    { 
-        "id": 30, 
-        "airline": "Malaysia Airlines", 
-        "logo": "https://logos-world.net/wp-content/uploads/2020/03/Malaysia-Airlines-Logo.png",
-        "time": "14:25", 
-        "destination": "KUALA LUMPUR", 
-        "destinationCode": "KUL",
-        "flight": "MH 192", 
-        "std": "14:25",
-        "etd": "14:25",
-        "gate": "E13", 
-        "status": "Departed",
-        "statusClass": "status-departed"
-    }
-]
+# Database configuration
+DATABASE_CONFIG = {
+    'server': os.getenv('SQL_SERVER_HOST', 'sqlserverdb.cgt0oi2i2k3f.us-east-1.rds.amazonaws.com'),
+    'database': os.getenv('SQL_SERVER_DATABASE', 'FIDS_DEV'),
+    'username': os.getenv('SQL_SERVER_USERNAME', 'admin'),
+    'password': os.getenv('SQL_SERVER_PASSWORD', 'Admin12345!'),
+    'driver': '{ODBC Driver 18 for SQL Server}'
+}
 
-@app.route('/api/flights', methods=['GET'])
-def get_flights():
-    """Get paginated flight data"""
+# SQLAlchemy setup
+Base = declarative_base()
+
+class Flight(Base):
+    __tablename__ = 'flights'
+    
+    id = Column(Integer, primary_key=True)
+    airline = Column(String(100), nullable=False)
+    logo = Column(String(500))
+    time = Column(String(10), nullable=False)
+    destination = Column(String(100), nullable=False)
+    destinationCode = Column(String(10), nullable=False)
+    flight = Column(String(20), nullable=False)
+    std = Column(String(10), nullable=False)
+    etd = Column(String(10), nullable=False)
+    gate = Column(String(10), nullable=False)
+    status = Column(String(50), nullable=False)
+    statusClass = Column(String(50), nullable=False)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+# Create database engine and session
+def create_db_engine():
     try:
-        page = int(request.args.get('page', 1))
-        per_page = int(request.args.get('per_page', 10))
+        # Build connection string for pyodbc
+        connection_string = (
+            f"mssql+pyodbc://{DATABASE_CONFIG['username']}:{DATABASE_CONFIG['password']}"
+            f"@{DATABASE_CONFIG['server']}/{DATABASE_CONFIG['database']}"
+            f"?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+        )
+        logger.info(f"Connecting to: {DATABASE_CONFIG['server']}/{DATABASE_CONFIG['database']}")
+        engine = create_engine(connection_string, echo=False)  # Set to False to reduce noise
         
-        # Validate pagination parameters
-        if page < 1:
-            page = 1
-        if per_page < 1 or per_page > 50:
-            per_page = 10
-            
-        # Calculate pagination
-        total_flights = len(FLIGHT_DATA)
+        # Test connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("✅ Database connection successful")
+        return engine
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {str(e)}")
+        logger.error("Please check your .env file and ensure the database is accessible")
+        return None
+
+engine = create_db_engine()
+Session = sessionmaker(bind=engine) if engine else None
+
+# Global variables for CDC monitoring
+cdc_thread = None
+cdc_running = False
+
+def init_database():
+    """Initialize database tables"""
+    if not engine:
+        raise Exception("Database connection not available. Please check your SQL Server configuration.")
+    
+    try:
+        Base.metadata.create_all(engine)
+        logger.info("Database tables created successfully")
+        return True
+    except Exception as e:
+        logger.error(f"Error creating database tables: {str(e)}")
+        raise e
+
+def get_flights_from_db(page=1, per_page=10):
+    """Get paginated flights from database"""
+    if not Session:
+        raise Exception("Database connection not available. Please check your SQL Server configuration.")
+    
+    try:
+        session = Session()
+        
+        # Calculate offset
+        offset = (page - 1) * per_page
+        
+        # Get total count
+        total_flights = session.query(Flight).count()
+        
+        # Get paginated flights with ORDER BY (required for SQL Server OFFSET/LIMIT)
+        flights = session.query(Flight).order_by(Flight.id).offset(offset).limit(per_page).all()
+        
+        # Convert to dict format
+        flight_list = []
+        for flight in flights:
+            flight_dict = {
+                'id': flight.id,
+                'airline': flight.airline,
+                'logo': flight.logo,
+                'time': flight.time,
+                'destination': flight.destination,
+                'destinationCode': flight.destinationCode,
+                'flight': flight.flight,
+                'std': flight.std,
+                'etd': flight.etd,
+                'gate': flight.gate,
+                'status': flight.status,
+                'statusClass': flight.statusClass,
+                'last_updated': flight.last_updated.isoformat() if flight.last_updated else None
+            }
+            flight_list.append(flight_dict)
+        
+        session.close()
+        
+        # Calculate pagination info
         total_pages = math.ceil(total_flights / per_page)
         
-        # Handle page overflow - reset to page 1 if beyond total pages
-        if page > total_pages:
-            page = 1
-            
-        start_index = (page - 1) * per_page
-        end_index = start_index + per_page
-        
-        # Get paginated data
-        flights = FLIGHT_DATA[start_index:end_index]
-        
-        return jsonify({
+        return {
             'success': True,
-            'flights': flights,
+            'flights': flight_list,
             'pagination': {
                 'current_page': page,
                 'per_page': per_page,
@@ -478,7 +174,119 @@ def get_flights():
                 'next_page': page + 1 if page < total_pages else 1,
                 'prev_page': page - 1 if page > 1 else total_pages
             }
-        })
+        }
+    except Exception as e:
+        logger.error(f"Error fetching flights from database: {str(e)}")
+        raise e
+
+def monitor_cdc_changes():
+    """Monitor database changes using CDC (Change Data Capture)"""
+    global cdc_running
+    
+    while cdc_running:
+        try:
+            session = Session()
+            
+            # Query for recent changes (last 5 seconds)
+            recent_changes = session.query(Flight).filter(
+                Flight.last_updated >= datetime.utcnow() - timedelta(seconds=5)
+            ).all()
+            
+            if recent_changes:
+                # Convert to dict format
+                changed_flights = []
+                for flight in recent_changes:
+                    flight_dict = {
+                        'id': flight.id,
+                        'airline': flight.airline,
+                        'logo': flight.logo,
+                        'time': flight.time,
+                        'destination': flight.destination,
+                        'destinationCode': flight.destinationCode,
+                        'flight': flight.flight,
+                        'std': flight.std,
+                        'etd': flight.etd,
+                        'gate': flight.gate,
+                        'status': flight.status,
+                        'statusClass': flight.statusClass,
+                        'last_updated': flight.last_updated.isoformat()
+                    }
+                    changed_flights.append(flight_dict)
+                
+                # Emit changes to all connected clients
+                socketio.emit('flight_updates', {
+                    'type': 'update',
+                    'flights': changed_flights,
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+                
+                logger.info(f"Broadcasted {len(changed_flights)} flight updates via WebSocket")
+            
+            session.close()
+            
+        except Exception as e:
+            logger.error(f"Error in CDC monitoring: {str(e)}")
+        
+        time.sleep(2)  # Check every 2 seconds
+
+def start_cdc_monitoring():
+    """Start CDC monitoring thread"""
+    global cdc_thread, cdc_running
+    
+    if not cdc_running:
+        cdc_running = True
+        cdc_thread = threading.Thread(target=monitor_cdc_changes)
+        cdc_thread.daemon = True
+        cdc_thread.start()
+        logger.info("CDC monitoring started")
+
+def stop_cdc_monitoring():
+    """Stop CDC monitoring thread"""
+    global cdc_running
+    cdc_running = False
+    logger.info("CDC monitoring stopped")
+
+# WebSocket event handlers
+@socketio.on('connect')
+def handle_connect():
+    logger.info(f"Client connected: {request.sid}")
+    emit('connection_response', {'status': 'connected', 'message': 'Connected to FIDS real-time updates'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    logger.info(f"Client disconnected: {request.sid}")
+
+@socketio.on('request_flights')
+def handle_request_flights(data):
+    """Handle flight data request via WebSocket"""
+    try:
+        page = data.get('page', 1)
+        per_page = data.get('per_page', 10)
+        
+        result = get_flights_from_db(page, per_page)
+        emit('flight_data', result)
+        
+    except Exception as e:
+        logger.error(f"Error handling flight request: {str(e)}")
+        emit('error', {'message': str(e)})
+
+
+@app.route('/api/flights', methods=['GET'])
+def get_flights():
+    """Get paginated flight data from database"""
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 10))
+        
+        # Validate pagination parameters
+        if page < 1:
+            page = 1
+        if per_page < 1 or per_page > 50:
+            per_page = 10
+        
+        # Get flights from database (no fallback)
+        result = get_flights_from_db(page, per_page)
+        return jsonify(result)
         
     except ValueError:
         return jsonify({
@@ -492,7 +300,7 @@ def get_flights():
         return jsonify({
             'success': False,
             'error': str(e),
-            'message': 'Internal server error'
+            'message': 'Database connection error. Please ensure SQL Server is accessible and tables are created.'
         }), 500
 
 @app.route('/api/execute-adb', methods=['POST'])
@@ -615,8 +423,115 @@ def health_check():
     """Health check endpoint"""
     return jsonify({
         'status': 'healthy',
-        'message': 'FIDS ADB API is running'
+        'message': 'FIDS API with SQL Server and WebSocket support is running',
+        'database': 'connected' if engine else 'disconnected',
+        'websocket': 'enabled',
+        'cdc_monitoring': 'active' if cdc_running else 'inactive'
     })
+
+@app.route('/api/init-db', methods=['POST'])
+def initialize_database():
+    """Initialize database tables"""
+    try:
+        success = init_database()
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Database tables created successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to create database tables'
+            }), 500
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Database initialization failed'
+        }), 500
+
+@app.route('/api/update-flight', methods=['PUT'])
+def update_flight():
+    """Update a specific flight (triggers CDC)"""
+    try:
+        data = request.get_json()
+        flight_id = data.get('id')
+        
+        if not flight_id:
+            return jsonify({
+                'success': False,
+                'error': 'Flight ID is required'
+            }), 400
+        
+        session = Session()
+        flight = session.query(Flight).filter(Flight.id == flight_id).first()
+        
+        if not flight:
+            session.close()
+            return jsonify({
+                'success': False,
+                'error': 'Flight not found'
+            }), 404
+        
+        # Update flight fields
+        for field in ['airline', 'time', 'destination', 'destinationCode', 'flight', 'std', 'etd', 'gate', 'status', 'statusClass']:
+            if field in data:
+                setattr(flight, field, data[field])
+        
+        # Update timestamp to trigger CDC
+        flight.last_updated = datetime.utcnow()
+        
+        session.commit()
+        session.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Flight {flight_id} updated successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating flight: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Flight update failed'
+        }), 500
+
+@app.route('/api/cdc/start', methods=['POST'])
+def start_cdc():
+    """Start CDC monitoring"""
+    try:
+        start_cdc_monitoring()
+        return jsonify({
+            'success': True,
+            'message': 'CDC monitoring started'
+        })
+    except Exception as e:
+        logger.error(f"Error starting CDC: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Failed to start CDC monitoring'
+        }), 500
+
+@app.route('/api/cdc/stop', methods=['POST'])
+def stop_cdc():
+    """Stop CDC monitoring"""
+    try:
+        stop_cdc_monitoring()
+        return jsonify({
+            'success': True,
+            'message': 'CDC monitoring stopped'
+        })
+    except Exception as e:
+        logger.error(f"Error stopping CDC: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'message': 'Failed to stop CDC monitoring'
+        }), 500
 
 @app.route('/api/adb-connect', methods=['POST'])
 def connect_adb_device():
@@ -661,5 +576,49 @@ def connect_adb_device():
             'message': 'Failed to connect to ADB device'
         }), 500
 
+# Initialize database and start services based on environment
+def initialize_services():
+    """Initialize database and start services"""
+    # Check database connection
+    if not engine:
+        logger.error("❌ Database connection failed!")
+        logger.error("Please ensure:")
+        logger.error("1. SQL Server is running and accessible")
+        logger.error("2. Environment variables are correctly set in .env file")
+        logger.error("3. Run the migration.sql script on your database first")
+        if not os.getenv('VERCEL_ENV'):
+            exit(1)
+        return False
+    
+    try:
+        # Initialize database on startup
+        logger.info("Initializing database...")
+        init_database()
+        logger.info("✅ Database initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ Database setup failed: {str(e)}")
+        logger.error("Please run the migration.sql script on your AWS SQL Server first")
+        if not os.getenv('VERCEL_ENV'):
+            exit(1)
+        return False
+    
+    # Start CDC monitoring only if not on Vercel (serverless doesn't support background threads)
+    if not os.getenv('VERCEL_ENV'):
+        logger.info("Starting CDC monitoring...")
+        start_cdc_monitoring()
+        logger.info("🚀 Starting FIDS API server...")
+        # Run the application with SocketIO
+        socketio.run(app, debug=True, port=8000, host='0.0.0.0')
+    else:
+        logger.info("🚀 FIDS API ready for Vercel deployment")
+    
+    return True
+
+# For Vercel deployment, initialize services when imported
+if os.getenv('VERCEL_ENV'):
+    initialize_services()
+
+# For local development
 if __name__ == '__main__':
-    app.run(debug=True, port=8000)
+    initialize_services()
