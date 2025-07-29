@@ -22,22 +22,27 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'ef6c5b4b31266d534b7069822ec1b4eee82d014cab206dbd1cc5e73693db7604')
 
 # Configure CORS based on environment
-if os.getenv('VERCEL_ENV'):
+if os.getenv('RAILWAY_ENVIRONMENT') or os.getenv('VERCEL_ENV'):
     # Production environment - allow your deployed frontend
     CORS(app, origins=[
-        "https://fids-two.vercel.app",  # Replace with your actual frontend URL
-        "https://*.vercel.app"  # Allow all Vercel preview deployments
+        "https://fids-two.vercel.app",
+        "https://*.vercel.app",
+        "https://*.railway.app",
+        "https://*.up.railway.app"
     ])
 else:
     # Development environment
     CORS(app, origins="*")
 
-# Initialize SocketIO with appropriate settings for Vercel
+# Initialize SocketIO with appropriate settings
+# Initialize SocketIO with appropriate settings
 socketio = SocketIO(
     app, 
-    cors_allowed_origins="*" if not os.getenv('VERCEL_ENV') else [
+    cors_allowed_origins="*" if not (os.getenv('RAILWAY_ENVIRONMENT') or os.getenv('VERCEL_ENV')) else [
         "https://fids-two.vercel.app",
-        "https://*.vercel.app"
+        "https://*.vercel.app",
+        "https://*.railway.app",
+        "https://*.up.railway.app"
     ],
     logger=False,  # Disable verbose logging in production
     engineio_logger=False,
@@ -615,9 +620,12 @@ def initialize_services():
     
     return True
 
-# For Vercel deployment, initialize services when imported
-if os.getenv('VERCEL_ENV'):
+# For Railway deployment, initialize services when imported
+if os.getenv('RAILWAY_ENVIRONMENT'):
     initialize_services()
+
+# Export app for gunicorn
+application = app
 
 # For local development
 if __name__ == '__main__':
