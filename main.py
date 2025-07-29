@@ -85,14 +85,27 @@ class Flight(Base):
 # Create database engine and session
 def create_db_engine():
     try:
-        # Build connection string for pyodbc
+        # Build connection string for pyodbc with better timeout settings for Railway
         connection_string = (
             f"mssql+pyodbc://{DATABASE_CONFIG['username']}:{DATABASE_CONFIG['password']}"
             f"@{DATABASE_CONFIG['server']}/{DATABASE_CONFIG['database']}"
-            f"?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+            f"?driver=ODBC+Driver+18+for+SQL+Server"
+            f"&TrustServerCertificate=yes"
+            f"&Connection+Timeout=30"
+            f"&Login+Timeout=30"
+            f"&timeout=30"
         )
         logger.info(f"Connecting to: {DATABASE_CONFIG['server']}/{DATABASE_CONFIG['database']}")
-        engine = create_engine(connection_string, echo=False)  # Set to False to reduce noise
+        
+        # Create engine with connection pooling and timeout settings
+        engine = create_engine(
+            connection_string, 
+            echo=False,
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
+            pool_recycle=3600  # Recycle connections every hour
+        )
         
         # Test connection
         with engine.connect() as conn:
